@@ -1,4 +1,3 @@
-const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
@@ -10,28 +9,10 @@ const Contact = require("./models/Contact");
 const User = require("./models/User");
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "../frontend")));
-
-  app.get("/", (req, res) => {
-    res.send("SOIT API is running. Use /api for endpoints.");
-  });
-
-  app.get("*", (req, res) => {
-    res.sendFile(path.resolve(__dirname, "../frontend", "index.html"));
-  });
-}
-
-// Middleware - Allow specific origins
-app.use(
-  cors({
-    origin: "*",
-    credentials: true,
-  }),
-);
-
+// Middleware
+app.use(cors());
 app.use(express.json());
 
 // MongoDB Connection
@@ -42,7 +23,24 @@ mongoose
 
 // ============ API ROUTES ============
 
-// Welcome route
+// Welcome route - This is the most important one for testing!
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    message: "SOIT Backend is running!",
+    status: "active",
+    endpoints: {
+      api: "GET /api",
+      contact: "POST /api/contact",
+      login: "POST /api/login",
+      register: "POST /api/register",
+      contacts: "GET /api/contacts",
+      stats: "GET /api/stats",
+    },
+  });
+});
+
+// API info route
 app.get("/api", (req, res) => {
   res.json({
     success: true,
@@ -308,10 +306,49 @@ app.get("/api/stats", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📡 API available at http://localhost:${PORT}/api`);
+// Forgot password endpoint
+app.post("/api/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      message: "Email est requis",
+    });
+  }
+
+  try {
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.json({
+        success: true,
+        message:
+          "Si un compte existe avec cet email, vous recevrez un lien de réinitialisation",
+      });
+    }
+
+    const resetToken = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" },
+    );
+
+    console.log(
+      `📧 Password reset link for ${email}: /reset-password?token=${resetToken}`,
+    );
+
+    res.json({
+      success: true,
+      message: "Un lien de réinitialisation a été envoyé à votre adresse email",
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
+  }
 });
 
 // ============ CREATE DEFAULT ADMIN USER ============
