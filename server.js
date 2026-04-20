@@ -15,6 +15,10 @@ const PORT = process.env.PORT || 5000;
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(__dirname, "../frontend")));
 
+  app.get("/", (req, res) => {
+    res.send("SOIT API is running. Use /api for endpoints.");
+  });
+
   app.get("*", (req, res) => {
     res.sendFile(path.resolve(__dirname, "../frontend", "index.html"));
   });
@@ -302,6 +306,12 @@ app.get("/api/stats", async (req, res) => {
       message: "Erreur serveur",
     });
   }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`📡 API available at http://localhost:${PORT}/api`);
 });
 
 // ============ CREATE DEFAULT ADMIN USER ============
