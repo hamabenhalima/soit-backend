@@ -299,9 +299,8 @@ app.get("/api/stats", (req, res) => {
   }
 });
 
-// ============ FORGOT PASSWORD ROUTE ============
-
-app.post("/api/forgot-password", (req, res) => {
+// Forgot password endpoint
+app.post("/api/forgot-password", async (req, res) => {
   const { email } = req.body;
 
   if (!email) {
@@ -312,8 +311,7 @@ app.post("/api/forgot-password", (req, res) => {
   }
 
   try {
-    const users = readJSON(USERS_FILE);
-    const user = users.find((u) => u.email === email.toLowerCase());
+    const user = await User.findOne({ email });
 
     // For security, always return success even if email doesn't exist
     if (!user) {
@@ -324,7 +322,16 @@ app.post("/api/forgot-password", (req, res) => {
       });
     }
 
-    console.log(`📧 Password reset requested for: ${email}`);
+    // Generate password reset token
+    const resetToken = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" },
+    );
+
+    console.log(
+      `📧 Password reset link for ${email}: /reset-password?token=${resetToken}`,
+    );
 
     res.json({
       success: true,
