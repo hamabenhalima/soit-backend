@@ -1,69 +1,45 @@
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
-const app = express();
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+require("dotenv").config();
 
+// Import Models
+const Contact = require("./models/Contact");
+const User = require("./models/User");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// ============ FILE STORAGE SETUP ============
-const DATA_DIR = path.join(__dirname, "data");
-const CONTACTS_FILE = path.join(DATA_DIR, "contacts.json");
-const USERS_FILE = path.join(DATA_DIR, "users.json");
+// MongoDB Connection
+mongoose
+  .connect(process.env.MONGODB_URI)
+  .then(() => console.log("✅ MongoDB connected successfully"))
+  .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
-// Create data directory if it doesn't exist
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+// ============ API ROUTES ============
 
-// Initialize contacts file if it doesn't exist
-if (!fs.existsSync(CONTACTS_FILE)) {
-  fs.writeFileSync(CONTACTS_FILE, JSON.stringify([]));
-}
-
-// Initialize users file with default admin
-if (!fs.existsSync(USERS_FILE)) {
-  const defaultUsers = [
-    {
-      id: 1,
-      username: "admin",
-      email: "admin@soit.com",
-      password: "admin123",
-      role: "admin",
-      createdAt: new Date().toISOString(),
-    },
-  ];
-  fs.writeFileSync(USERS_FILE, JSON.stringify(defaultUsers, null, 2));
-}
-
-// Helper functions
-function readJSON(filePath) {
-  const data = fs.readFileSync(filePath, "utf8");
-  return JSON.parse(data);
-}
-
-function writeJSON(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-}
-
-// ============ WELCOME ROUTES ============
-
+// Welcome route
 app.get("/", (req, res) => {
   res.json({
     success: true,
-    message: "SOIT Backend is running!",
+    message: "SOIT Backend is running with MongoDB!",
     status: "active",
     timestamp: new Date().toISOString(),
   });
 });
 
+// API info route
 app.get("/api", (req, res) => {
   res.json({
     success: true,
     message: "Welcome to SOIT API",
-    version: "1.0.0",
-    storage: "JSON files",
+    version: "2.0.0",
+    database: "MongoDB Atlas",
     endpoints: {
       root: "GET /",
       api: "GET /api",
@@ -78,9 +54,8 @@ app.get("/api", (req, res) => {
   });
 });
 
-// ============ CONTACT ROUTES ============
-
-app.post("/api/contact", (req, res) => {
+// Contact form submission
+app.post("/api/contact", async (req, res) => {
   const { name, email, phone, message } = req.body;
 
   if (!name || !email || !message) {
@@ -91,18 +66,13 @@ app.post("/api/contact", (req, res) => {
   }
 
   try {
-    const contacts = readJSON(CONTACTS_FILE);
-    const newContact = {
-      id: contacts.length + 1,
-      name: name.trim(),
-      email: email.trim().toLowerCase(),
+    const newContact = new Contact({
+      name,
+      email,
       phone: phone || "",
-      message: message.trim(),
-      read: false,
-      createdAt: new Date().toISOString(),
-    };
-    contacts.push(newContact);
-    writeJSON(CONTACTS_FILE, contacts);
+      message,
+    });
+    await newContact.save();
 
     console.log(`📧 New message from ${name} (${email})`);
 
@@ -114,57 +84,68 @@ app.post("/api/contact", (req, res) => {
     console.error("Contact error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur lors de l'envoi du message",
+      message: "Erreur serveur",
     });
   }
 });
 
-app.get("/api/contacts", (req, res) => {
+// Get all contacts
+app.get("/api/contacts", async (req, res) => {
   try {
-    const contacts = readJSON(CONTACTS_FILE);
-    res.json({
-      success: true,
-      contacts: contacts.reverse(),
-    });
+    const contacts = await Contact.find().sort({ createdAt: -1 });
+    res.json({ success: true, contacts });
   } catch (error) {
     console.error("Get contacts error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur lors de la récupération des messages",
+      message: "Erreur serveur",
     });
   }
 });
 
-app.delete("/api/contacts/:id", (req, res) => {
+// Get single contact by ID
+app.get("/api/contacts/:id", async (req, res) => {
   try {
-    let contacts = readJSON(CONTACTS_FILE);
-    const id = parseInt(req.params.id);
-    const filteredContacts = contacts.filter((c) => c.id !== id);
-
-    if (contacts.length === filteredContacts.length) {
+    const contact = await Contact.findById(req.params.id);
+    if (!contact) {
       return res.status(404).json({
         success: false,
         message: "Message non trouvé",
       });
     }
+    res.json({ success: true, contact });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
+  }
+});
 
-    writeJSON(CONTACTS_FILE, filteredContacts);
+// Delete contact
+app.delete("/api/contacts/:id", async (req, res) => {
+  try {
+    const deleted = await Contact.findByIdAndDelete(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Message non trouvé",
+      });
+    }
     res.json({
       success: true,
       message: "Message supprimé avec succès",
     });
   } catch (error) {
-    console.error("Delete contact error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur lors de la suppression",
+      message: "Erreur serveur",
     });
   }
 });
 
-// ============ USER ROUTES ============
-
-app.post("/api/register", (req, res) => {
+// User registration
+app.post("/api/register", async (req, res) => {
   const { username, email, password } = req.body;
 
   if (!username || !email || !password) {
@@ -182,32 +163,16 @@ app.post("/api/register", (req, res) => {
   }
 
   try {
-    const users = readJSON(USERS_FILE);
-
-    if (users.find((u) => u.email === email.toLowerCase())) {
+    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+    if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: "Cet email est déjà utilisé",
+        message: "Email ou nom d'utilisateur déjà utilisé",
       });
     }
 
-    if (users.find((u) => u.username === username)) {
-      return res.status(400).json({
-        success: false,
-        message: "Ce nom d'utilisateur est déjà pris",
-      });
-    }
-
-    const newUser = {
-      id: users.length + 1,
-      username: username.trim(),
-      email: email.trim().toLowerCase(),
-      password: password,
-      role: "user",
-      createdAt: new Date().toISOString(),
-    };
-    users.push(newUser);
-    writeJSON(USERS_FILE, users);
+    const newUser = new User({ username, email, password });
+    await newUser.save();
 
     console.log(`📝 New user registered: ${username} (${email})`);
 
@@ -215,7 +180,7 @@ app.post("/api/register", (req, res) => {
       success: true,
       message: "Inscription réussie !",
       user: {
-        id: newUser.id,
+        id: newUser._id,
         username: newUser.username,
         email: newUser.email,
         role: newUser.role,
@@ -225,12 +190,13 @@ app.post("/api/register", (req, res) => {
     console.error("Registration error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur lors de l'inscription",
+      message: "Erreur serveur",
     });
   }
 });
 
-app.post("/api/login", (req, res) => {
+// User login
+app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
@@ -241,12 +207,16 @@ app.post("/api/login", (req, res) => {
   }
 
   try {
-    const users = readJSON(USERS_FILE);
-    const user = users.find(
-      (u) => u.email === email.toLowerCase() && u.password === password,
-    );
-
+    const user = await User.findOne({ email });
     if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "Email ou mot de passe incorrect",
+      });
+    }
+
+    const isValidPassword = await user.comparePassword(password);
+    if (!isValidPassword) {
       return res.status(401).json({
         success: false,
         message: "Email ou mot de passe incorrect",
@@ -259,7 +229,7 @@ app.post("/api/login", (req, res) => {
       success: true,
       message: "Connexion réussie !",
       user: {
-        id: user.id,
+        id: user._id,
         username: user.username,
         email: user.email,
         role: user.role,
@@ -269,37 +239,36 @@ app.post("/api/login", (req, res) => {
     console.error("Login error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur lors de la connexion",
+      message: "Erreur serveur",
     });
   }
 });
 
-// ============ STATISTICS ROUTE ============
-
-app.get("/api/stats", (req, res) => {
+// Get statistics
+app.get("/api/stats", async (req, res) => {
   try {
-    const contacts = readJSON(CONTACTS_FILE);
-    const users = readJSON(USERS_FILE);
+    const totalMessages = await Contact.countDocuments();
+    const unreadMessages = await Contact.countDocuments({ read: false });
+    const totalUsers = await User.countDocuments();
 
     res.json({
       success: true,
       stats: {
-        totalMessages: contacts.length,
-        unreadMessages: contacts.filter((c) => !c.read).length,
-        totalUsers: users.length,
-        lastMessage: contacts[contacts.length - 1] || null,
+        totalMessages,
+        unreadMessages,
+        totalUsers,
       },
     });
   } catch (error) {
     console.error("Stats error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur lors de la récupération des statistiques",
+      message: "Erreur serveur",
     });
   }
 });
 
-// Forgot password endpoint
+// Forgot password
 app.post("/api/forgot-password", async (req, res) => {
   const { email } = req.body;
 
@@ -322,16 +291,7 @@ app.post("/api/forgot-password", async (req, res) => {
       });
     }
 
-    // Generate password reset token
-    const resetToken = jwt.sign(
-      { id: user._id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" },
-    );
-
-    console.log(
-      `📧 Password reset link for ${email}: /reset-password?token=${resetToken}`,
-    );
+    console.log(`📧 Password reset requested for: ${email}`);
 
     res.json({
       success: true,
@@ -346,49 +306,45 @@ app.post("/api/forgot-password", async (req, res) => {
   }
 });
 
-// ============ HEALTH CHECK ROUTE ============
+// ============ CREATE DEFAULT ADMIN USER ============
+async function createDefaultAdmin() {
+  try {
+    const adminExists = await User.findOne({ email: "admin@soit.com" });
 
-app.get("/health", (req, res) => {
-  res.json({
-    success: true,
-    status: "healthy",
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-  });
-});
+    if (!adminExists) {
+      const admin = new User({
+        username: "admin",
+        email: "admin@soit.com",
+        password: "admin123",
+        role: "admin",
+      });
 
-// ============ 404 HANDLER ============
-
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: "Route not found",
-    requestedUrl: req.url,
-  });
-});
-
-// ============ ERROR HANDLER ============
-
-app.use((err, req, res, next) => {
-  console.error("Server error:", err);
-  res.status(500).json({
-    success: false,
-    message: "Erreur interne du serveur",
-  });
-});
+      await admin.save();
+      console.log("\n✅ DEFAULT ADMIN USER CREATED!");
+      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      console.log("   Email:    admin@soit.com");
+      console.log("   Password: admin123");
+      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    } else {
+      console.log("✅ Admin user already exists");
+    }
+  } catch (error) {
+    console.error("❌ Error creating admin:", error.message);
+  }
+}
 
 // ============ START SERVER ============
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`
     ╔══════════════════════════════════════════════════════════════╗
     ║                    SOIT Backend Server                       ║
     ╠══════════════════════════════════════════════════════════════╣
     ║   Status:     ✅ Running                                    ║
     ║   Port:       ${PORT}                                            ║
-    ║   URL:        https://soit-backend.onrender.com              ║
-    ║   API:        https://soit-backend.onrender.com/api          ║
-    ║   Storage:    JSON files (no database needed)               ║
+    ║   Database:   MongoDB Atlas                                 ║
+    ║   API:        http://localhost:${PORT}/api                      ║
     ╚══════════════════════════════════════════════════════════════╝
     `);
+
+  await createDefaultAdmin();
 });

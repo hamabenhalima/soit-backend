@@ -8,7 +8,6 @@ const UserSchema = new mongoose.Schema(
       required: [true, "Username is required"],
       unique: true,
       trim: true,
-      minlength: 3,
     },
     email: {
       type: String,
@@ -20,7 +19,6 @@ const UserSchema = new mongoose.Schema(
     password: {
       type: String,
       required: [true, "Password is required"],
-      minlength: 6,
     },
     role: {
       type: String,
