@@ -11,19 +11,51 @@ const User = require("./models/User");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// ============ MIDDLEWARE ============
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Replace your mongoose.connect line with this:
-mongoose
-  .connect(process.env.MONGODB_URI, {
-    serverSelectionTimeoutMS: 30000, // Increase timeout to 30 seconds
-    socketTimeoutMS: 45000,
-    connectTimeoutMS: 30000,
-  })
-  .then(() => console.log("✅ MongoDB connected successfully"))
-  .catch((err) => console.error("❌ MongoDB connection error:", err.message));
+// ============ MONGODB CONNECTION (FIXED) ============
+const connectDB = async () => {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+      connectTimeoutMS: 30000,
+      heartbeatFrequencyMS: 10000,
+    });
+    console.log("✅ MongoDB connected successfully");
+  } catch (error) {
+    console.error("❌ MongoDB connection error:", error.message);
+    console.log("⚠️ Retrying connection in 5 seconds...");
+    setTimeout(connectDB, 5000);
+  }
+};
+
+connectDB();
+
+// Handle connection events
+mongoose.connection.on("disconnected", () => {
+  console.log("⚠️ MongoDB disconnected, attempting to reconnect...");
+  setTimeout(connectDB, 5000);
+});
+
+mongoose.connection.on("error", (err) => {
+  console.error("❌ MongoDB error:", err.message);
+});
+
+// ============ CHECK DATABASE CONNECTION MIDDLEWARE ============
+const checkDBConnection = (req, res, next) => {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      success: false,
+      message: "Base de données en cours de connexion, veuillez réessayer",
+    });
+  }
+  next();
+};
+
 // ============ API ROUTES ============
 
 // Welcome route
@@ -32,6 +64,7 @@ app.get("/", (req, res) => {
     success: true,
     message: "SOIT Backend is running with MongoDB!",
     status: "active",
+    dbState: mongoose.connection.readyState === 1 ? "connected" : "connecting",
     timestamp: new Date().toISOString(),
   });
 });
@@ -43,6 +76,7 @@ app.get("/api", (req, res) => {
     message: "Welcome to SOIT API",
     version: "2.0.0",
     database: "MongoDB Atlas",
+    dbConnected: mongoose.connection.readyState === 1,
     endpoints: {
       root: "GET /",
       api: "GET /api",
@@ -57,8 +91,19 @@ app.get("/api", (req, res) => {
   });
 });
 
+// Health check route
+app.get("/health", (req, res) => {
+  res.json({
+    success: true,
+    status: "healthy",
+    dbConnected: mongoose.connection.readyState === 1,
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Contact form submission
-app.post("/api/contact", async (req, res) => {
+app.post("/api/contact", checkDBConnection, async (req, res) => {
   const { name, email, phone, message } = req.body;
 
   if (!name || !email || !message) {
@@ -70,10 +115,10 @@ app.post("/api/contact", async (req, res) => {
 
   try {
     const newContact = new Contact({
-      name,
-      email,
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
       phone: phone || "",
-      message,
+      message: message.trim(),
     });
     await newContact.save();
 
@@ -87,13 +132,13 @@ app.post("/api/contact", async (req, res) => {
     console.error("Contact error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur serveur",
+      message: "Erreur serveur: " + error.message,
     });
   }
 });
 
 // Get all contacts
-app.get("/api/contacts", async (req, res) => {
+app.get("/api/contacts", checkDBConnection, async (req, res) => {
   try {
     const contacts = await Contact.find().sort({ createdAt: -1 });
     res.json({ success: true, contacts });
@@ -107,7 +152,7 @@ app.get("/api/contacts", async (req, res) => {
 });
 
 // Get single contact by ID
-app.get("/api/contacts/:id", async (req, res) => {
+app.get("/api/contacts/:id", checkDBConnection, async (req, res) => {
   try {
     const contact = await Contact.findById(req.params.id);
     if (!contact) {
@@ -126,7 +171,7 @@ app.get("/api/contacts/:id", async (req, res) => {
 });
 
 // Delete contact
-app.delete("/api/contacts/:id", async (req, res) => {
+app.delete("/api/contacts/:id", checkDBConnection, async (req, res) => {
   try {
     const deleted = await Contact.findByIdAndDelete(req.params.id);
     if (!deleted) {
@@ -148,7 +193,7 @@ app.delete("/api/contacts/:id", async (req, res) => {
 });
 
 // User registration
-app.post("/api/register", async (req, res) => {
+app.post("/api/register", checkDBConnection, async (req, res) => {
   const { username, email, password } = req.body;
 
   if (!username || !email || !password) {
@@ -174,7 +219,11 @@ app.post("/api/register", async (req, res) => {
       });
     }
 
-    const newUser = new User({ username, email, password });
+    const newUser = new User({
+      username: username.trim(),
+      email: email.trim().toLowerCase(),
+      password,
+    });
     await newUser.save();
 
     console.log(`📝 New user registered: ${username} (${email})`);
@@ -199,7 +248,7 @@ app.post("/api/register", async (req, res) => {
 });
 
 // User login
-app.post("/api/login", async (req, res) => {
+app.post("/api/login", checkDBConnection, async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
@@ -210,7 +259,7 @@ app.post("/api/login", async (req, res) => {
   }
 
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -248,7 +297,7 @@ app.post("/api/login", async (req, res) => {
 });
 
 // Get statistics
-app.get("/api/stats", async (req, res) => {
+app.get("/api/stats", checkDBConnection, async (req, res) => {
   try {
     const totalMessages = await Contact.countDocuments();
     const unreadMessages = await Contact.countDocuments({ read: false });
@@ -283,7 +332,7 @@ app.post("/api/forgot-password", async (req, res) => {
   }
 
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
 
     // For security, always return success even if email doesn't exist
     if (!user) {
@@ -312,6 +361,13 @@ app.post("/api/forgot-password", async (req, res) => {
 // ============ CREATE DEFAULT ADMIN USER ============
 async function createDefaultAdmin() {
   try {
+    // Wait for database connection
+    if (mongoose.connection.readyState !== 1) {
+      console.log("⏳ Waiting for database connection to create admin...");
+      setTimeout(createDefaultAdmin, 2000);
+      return;
+    }
+
     const adminExists = await User.findOne({ email: "admin@soit.com" });
 
     if (!adminExists) {
@@ -349,5 +405,14 @@ app.listen(PORT, async () => {
     ╚══════════════════════════════════════════════════════════════╝
     `);
 
-  await createDefaultAdmin();
+  // Wait for database connection before creating admin
+  setTimeout(createDefaultAdmin, 3000);
+});
+
+// ============ GRACEFUL SHUTDOWN ============
+process.on("SIGINT", async () => {
+  console.log("\n⚠️ Shutting down server...");
+  await mongoose.connection.close();
+  console.log("✅ MongoDB connection closed");
+  process.exit(0);
 });
