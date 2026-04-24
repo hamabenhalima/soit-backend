@@ -16,7 +16,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ============ MONGODB CONNECTION (FIXED) ============
+// ============ MONGODB CONNECTION ============
 const connectDB = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {
@@ -45,38 +45,23 @@ mongoose.connection.on("error", (err) => {
   console.error("❌ MongoDB error:", err.message);
 });
 
-// ============ CHECK DATABASE CONNECTION MIDDLEWARE ============
-const checkDBConnection = (req, res, next) => {
-  if (mongoose.connection.readyState !== 1) {
-    return res.status(503).json({
-      success: false,
-      message: "Base de données en cours de connexion, veuillez réessayer",
-    });
-  }
-  next();
-};
+// ============ WELCOME ROUTES ============
 
-// ============ API ROUTES ============
-
-// Welcome route
 app.get("/", (req, res) => {
   res.json({
     success: true,
     message: "SOIT Backend is running with MongoDB!",
     status: "active",
-    dbState: mongoose.connection.readyState === 1 ? "connected" : "connecting",
     timestamp: new Date().toISOString(),
   });
 });
 
-// API info route
 app.get("/api", (req, res) => {
   res.json({
     success: true,
     message: "Welcome to SOIT API",
     version: "2.0.0",
     database: "MongoDB Atlas",
-    dbConnected: mongoose.connection.readyState === 1,
     endpoints: {
       root: "GET /",
       api: "GET /api",
@@ -91,7 +76,6 @@ app.get("/api", (req, res) => {
   });
 });
 
-// Health check route
 app.get("/health", (req, res) => {
   res.json({
     success: true,
@@ -102,8 +86,10 @@ app.get("/health", (req, res) => {
   });
 });
 
+// ============ CONTACT ROUTES ============
+
 // Contact form submission
-app.post("/api/contact", checkDBConnection, async (req, res) => {
+app.post("/api/contact", async (req, res) => {
   const { name, email, phone, message } = req.body;
 
   if (!name || !email || !message) {
@@ -132,13 +118,13 @@ app.post("/api/contact", checkDBConnection, async (req, res) => {
     console.error("Contact error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur serveur: " + error.message,
+      message: "Erreur serveur",
     });
   }
 });
 
 // Get all contacts
-app.get("/api/contacts", checkDBConnection, async (req, res) => {
+app.get("/api/contacts", async (req, res) => {
   try {
     const contacts = await Contact.find().sort({ createdAt: -1 });
     res.json({ success: true, contacts });
@@ -152,7 +138,7 @@ app.get("/api/contacts", checkDBConnection, async (req, res) => {
 });
 
 // Get single contact by ID
-app.get("/api/contacts/:id", checkDBConnection, async (req, res) => {
+app.get("/api/contacts/:id", async (req, res) => {
   try {
     const contact = await Contact.findById(req.params.id);
     if (!contact) {
@@ -171,7 +157,7 @@ app.get("/api/contacts/:id", checkDBConnection, async (req, res) => {
 });
 
 // Delete contact
-app.delete("/api/contacts/:id", checkDBConnection, async (req, res) => {
+app.delete("/api/contacts/:id", async (req, res) => {
   try {
     const deleted = await Contact.findByIdAndDelete(req.params.id);
     if (!deleted) {
@@ -192,8 +178,10 @@ app.delete("/api/contacts/:id", checkDBConnection, async (req, res) => {
   }
 });
 
+// ============ USER ROUTES ============
+
 // User registration
-app.post("/api/register", checkDBConnection, async (req, res) => {
+app.post("/api/register", async (req, res) => {
   const { username, email, password } = req.body;
 
   if (!username || !email || !password) {
@@ -248,7 +236,7 @@ app.post("/api/register", checkDBConnection, async (req, res) => {
 });
 
 // User login
-app.post("/api/login", checkDBConnection, async (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
@@ -297,7 +285,7 @@ app.post("/api/login", checkDBConnection, async (req, res) => {
 });
 
 // Get statistics
-app.get("/api/stats", checkDBConnection, async (req, res) => {
+app.get("/api/stats", async (req, res) => {
   try {
     const totalMessages = await Contact.countDocuments();
     const unreadMessages = await Contact.countDocuments({ read: false });
