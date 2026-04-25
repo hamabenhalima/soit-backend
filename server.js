@@ -404,3 +404,73 @@ process.on("SIGINT", async () => {
   console.log("✅ MongoDB connection closed");
   process.exit(0);
 });
+
+// Import Review model (add with other imports at the top)
+const Review = require("./models/Review");
+
+// ============ REVIEW ROUTES ============
+
+// Submit a new review (client)
+app.post("/api/reviews", async (req, res) => {
+  const { name, email, rating, comment } = req.body;
+
+  if (!name || !email || !rating || !comment) {
+    return res.status(400).json({
+      success: false,
+      message: "Tous les champs sont requis",
+    });
+  }
+
+  if (rating < 1 || rating > 5) {
+    return res.status(400).json({
+      success: false,
+      message: "La note doit être entre 1 et 5",
+    });
+  }
+
+  if (comment.length < 10) {
+    return res.status(400).json({
+      success: false,
+      message: "Le commentaire doit contenir au moins 10 caractères",
+    });
+  }
+
+  try {
+    const newReview = new Review({
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      rating: parseInt(rating),
+      comment: comment.trim(),
+      status: "approved",
+    });
+    await newReview.save();
+
+    console.log(`⭐ New review from ${name} (${rating} stars)`);
+
+    res.json({
+      success: true,
+      message: "Merci pour votre avis !",
+    });
+  } catch (error) {
+    console.error("Review error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
+  }
+});
+
+// Get approved reviews (for website display)
+app.get("/api/reviews", async (req, res) => {
+  try {
+    const reviews = await Review.find({ status: "approved" })
+      .sort({ createdAt: -1 })
+      .limit(10);
+    res.json({ success: true, reviews });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
+  }
+});
