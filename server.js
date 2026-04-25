@@ -7,6 +7,7 @@ require("dotenv").config();
 // Import Models
 const Contact = require("./models/Contact");
 const User = require("./models/User");
+const Review = require("./models/Review"); // ✅ MOVED HERE - before app.listen
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -72,6 +73,8 @@ app.get("/api", (req, res) => {
       stats: "GET /api/stats",
       deleteContact: "DELETE /api/contacts/:id",
       forgotPassword: "POST /api/forgot-password",
+      reviews: "GET /api/reviews",
+      users: "GET /api/users",
     },
   });
 });
@@ -322,7 +325,6 @@ app.post("/api/forgot-password", async (req, res) => {
   try {
     const user = await User.findOne({ email: email.trim().toLowerCase() });
 
-    // For security, always return success even if email doesn't exist
     if (!user) {
       return res.json({
         success: true,
@@ -345,68 +347,6 @@ app.post("/api/forgot-password", async (req, res) => {
     });
   }
 });
-
-// ============ CREATE DEFAULT ADMIN USER ============
-async function createDefaultAdmin() {
-  try {
-    // Wait for database connection
-    if (mongoose.connection.readyState !== 1) {
-      console.log("⏳ Waiting for database connection to create admin...");
-      setTimeout(createDefaultAdmin, 2000);
-      return;
-    }
-
-    const adminExists = await User.findOne({ email: "admin@soit.com" });
-
-    if (!adminExists) {
-      const admin = new User({
-        username: "admin",
-        email: "admin@soit.com",
-        password: "admin123",
-        role: "admin",
-      });
-
-      await admin.save();
-      console.log("\n✅ DEFAULT ADMIN USER CREATED!");
-      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-      console.log("   Email:    admin@soit.com");
-      console.log("   Password: admin123");
-      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    } else {
-      console.log("✅ Admin user already exists");
-    }
-  } catch (error) {
-    console.error("❌ Error creating admin:", error.message);
-  }
-}
-
-// ============ START SERVER ============
-app.listen(PORT, async () => {
-  console.log(`
-    ╔══════════════════════════════════════════════════════════════╗
-    ║                    SOIT Backend Server                       ║
-    ╠══════════════════════════════════════════════════════════════╣
-    ║   Status:     ✅ Running                                    ║
-    ║   Port:       ${PORT}                                            ║
-    ║   Database:   MongoDB Atlas                                 ║
-    ║   API:        http://localhost:${PORT}/api                      ║
-    ╚══════════════════════════════════════════════════════════════╝
-    `);
-
-  // Wait for database connection before creating admin
-  setTimeout(createDefaultAdmin, 3000);
-});
-
-// ============ GRACEFUL SHUTDOWN ============
-process.on("SIGINT", async () => {
-  console.log("\n⚠️ Shutting down server...");
-  await mongoose.connection.close();
-  console.log("✅ MongoDB connection closed");
-  process.exit(0);
-});
-
-// Import Review model (add with other imports at the top)
-const Review = require("./models/Review");
 
 // ============ REVIEW ROUTES ============
 
@@ -468,9 +408,96 @@ app.get("/api/reviews", async (req, res) => {
       .limit(10);
     res.json({ success: true, reviews });
   } catch (error) {
+    console.error("Get reviews error:", error);
     res.status(500).json({
       success: false,
       message: "Erreur serveur",
     });
   }
+});
+
+// ============ ADMIN ROUTES ============
+
+// Get all users (for admin dashboard)
+app.get("/api/users", async (req, res) => {
+  try {
+    const users = await User.find().select("-password").sort({ createdAt: -1 });
+    res.json({ success: true, users });
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  }
+});
+
+// Delete review (admin)
+app.delete("/api/admin/reviews/:id", async (req, res) => {
+  try {
+    const deleted = await Review.findByIdAndDelete(req.params.id);
+    if (!deleted) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Avis non trouvé" });
+    }
+    res.json({ success: true, message: "Avis supprimé" });
+  } catch (error) {
+    console.error("Delete review error:", error);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  }
+});
+
+// ============ CREATE DEFAULT ADMIN USER ============
+async function createDefaultAdmin() {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      console.log("⏳ Waiting for database connection to create admin...");
+      setTimeout(createDefaultAdmin, 2000);
+      return;
+    }
+
+    const adminExists = await User.findOne({ email: "admin@soit.com" });
+
+    if (!adminExists) {
+      const admin = new User({
+        username: "admin",
+        email: "admin@soit.com",
+        password: "admin123",
+        role: "admin",
+      });
+
+      await admin.save();
+      console.log("\n✅ DEFAULT ADMIN USER CREATED!");
+      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      console.log("   Email:    admin@soit.com");
+      console.log("   Password: admin123");
+      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    } else {
+      console.log("✅ Admin user already exists");
+    }
+  } catch (error) {
+    console.error("❌ Error creating admin:", error.message);
+  }
+}
+
+// ============ START SERVER ============
+app.listen(PORT, async () => {
+  console.log(`
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                    SOIT Backend Server                       ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║   Status:     ✅ Running                                    ║
+    ║   Port:       ${PORT}                                            ║
+    ║   Database:   MongoDB Atlas                                 ║
+    ║   API:        http://localhost:${PORT}/api                      ║
+    ╚══════════════════════════════════════════════════════════════╝
+    `);
+
+  setTimeout(createDefaultAdmin, 3000);
+});
+
+// ============ GRACEFUL SHUTDOWN ============
+process.on("SIGINT", async () => {
+  console.log("\n⚠️ Shutting down server...");
+  await mongoose.connection.close();
+  console.log("✅ MongoDB connection closed");
+  process.exit(0);
 });
