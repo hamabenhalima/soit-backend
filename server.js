@@ -2,20 +2,26 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
-
-// Add with other imports
 const jwt = require("jsonwebtoken");
-const { sendEmail, getPasswordResetEmail } = require("./config/email");
-
+const nodemailer = require("nodemailer");
 require("dotenv").config();
 
 // Import Models
 const Contact = require("./models/Contact");
 const User = require("./models/User");
-const Review = require("./models/Review"); // ✅ MOVED HERE - before app.listen
+const Review = require("./models/Review");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ============ EMAIL TRANSPORTER ============
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
 // ============ MIDDLEWARE ============
 app.use(cors());
@@ -78,6 +84,7 @@ app.get("/api", (req, res) => {
       stats: "GET /api/stats",
       deleteContact: "DELETE /api/contacts/:id",
       forgotPassword: "POST /api/forgot-password",
+      resetPassword: "POST /api/reset-password",
       reviews: "GET /api/reviews",
       users: "GET /api/users",
     },
@@ -292,6 +299,121 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
+// Get statistics
+app.get("/api/stats", async (req, res) => {
+  try {
+    const totalMessages = await Contact.countDocuments();
+    const unreadMessages = await Contact.countDocuments({ read: false });
+    const totalUsers = await User.countDocuments();
+
+    res.json({
+      success: true,
+      stats: {
+        totalMessages,
+        unreadMessages,
+        totalUsers,
+      },
+    });
+  } catch (error) {
+    console.error("Stats error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
+  }
+});
+
+// ============ FORGOT PASSWORD & RESET PASSWORD ============
+
+// Forgot password - sends email with reset link
+app.post("/api/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      message: "Email est requis",
+    });
+  }
+
+  try {
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
+
+    // For security, always return success even if email doesn't exist
+    if (!user) {
+      return res.json({
+        success: true,
+        message:
+          "Si un compte existe avec cet email, vous recevrez un lien de réinitialisation",
+      });
+    }
+
+    // Generate reset token
+    const resetToken = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" },
+    );
+
+    const resetLink = `https://hamabenhalima.github.io/SOIT-Infrastructure-Website/reset-password.html?token=${resetToken}`;
+
+    // Email HTML template
+    const emailHtml = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <style>
+                    body { font-family: Arial, sans-serif; line-height: 1.6; }
+                    .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
+                    .header { background: #2370f5; color: white; padding: 15px; text-align: center; border-radius: 5px; }
+                    .btn { display: inline-block; background: #2370f5; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+                    .footer { font-size: 12px; color: #999; text-align: center; margin-top: 20px; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h2>🔐 Réinitialisation de votre mot de passe</h2>
+                    </div>
+                    <p>Bonjour ${user.username},</p>
+                    <p>Vous avez demandé à réinitialiser votre mot de passe pour votre compte SOIT.</p>
+                    <p>Cliquez sur le bouton ci-dessous pour créer un nouveau mot de passe :</p>
+                    <div style="text-align: center;">
+                        <a href="${resetLink}" class="btn">Réinitialiser mon mot de passe</a>
+                    </div>
+                    <p>Ce lien expirera dans 1 heure pour des raisons de sécurité.</p>
+                    <p>Si vous n'avez pas demandé cette réinitialisation, ignorez simplement cet email.</p>
+                    <div class="footer">
+                        <p>SOIT - Société El Oukhoua d'Infrastructure et de Travaux</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+        `;
+
+    // Send email
+    await transporter.sendMail({
+      from: `"SOIT" <${process.env.EMAIL_USER}>`,
+      to: user.email,
+      subject: "🔐 Réinitialisation de votre mot de passe - SOIT",
+      html: emailHtml,
+    });
+
+    console.log(`✅ Password reset email sent to: ${user.email}`);
+
+    res.json({
+      success: true,
+      message: "Un lien de réinitialisation a été envoyé à votre adresse email",
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
+  }
+});
+
 // Reset password with token
 app.post("/api/reset-password", async (req, res) => {
   const { token, newPassword } = req.body;
@@ -336,114 +458,6 @@ app.post("/api/reset-password", async (req, res) => {
     res.status(400).json({
       success: false,
       message: "Lien invalide ou expiré",
-    });
-  }
-});
-
-// Get statistics
-app.get("/api/stats", async (req, res) => {
-  try {
-    const totalMessages = await Contact.countDocuments();
-    const unreadMessages = await Contact.countDocuments({ read: false });
-    const totalUsers = await User.countDocuments();
-
-    res.json({
-      success: true,
-      stats: {
-        totalMessages,
-        unreadMessages,
-        totalUsers,
-      },
-    });
-  } catch (error) {
-    console.error("Stats error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
-  }
-});
-
-// Forgot password
-app.post("/api/forgot-password", async (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({
-      success: false,
-      message: "Email est requis",
-    });
-  }
-
-  try {
-    const user = await User.findOne({ email: email.trim().toLowerCase() });
-
-    if (!user) {
-      return res.json({
-        success: true,
-        message:
-          "Si un compte existe avec cet email, vous recevrez un lien de réinitialisation",
-      });
-    }
-
-    console.log(`📧 Password reset requested for: ${email}`);
-
-    res.json({
-      success: true,
-      message: "Un lien de réinitialisation a été envoyé à votre adresse email",
-    });
-  } catch (error) {
-    console.error("Forgot password error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
-  }
-});
-
-// Forgot password - sends email with reset link
-app.post("/api/forgot-password", async (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({
-      success: false,
-      message: "Email est requis",
-    });
-  }
-
-  try {
-    const user = await User.findOne({ email: email.trim().toLowerCase() });
-
-    // For security, always return success even if email doesn't exist
-    if (!user) {
-      return res.json({
-        success: true,
-        message:
-          "Si un compte existe avec cet email, vous recevrez un lien de réinitialisation",
-      });
-    }
-
-    // Generate reset token
-    const resetToken = jwt.sign(
-      { id: user._id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" },
-    );
-
-    console.log(`📧 Sending password reset email to: ${email}`);
-
-    // TODO: Add email sending here (optional)
-
-    res.json({
-      success: true,
-      message: "Un lien de réinitialisation a été envoyé à votre adresse email",
-    });
-  } catch (error) {
-    console.error("Forgot password error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
     });
   }
 });
