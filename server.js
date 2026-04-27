@@ -2,6 +2,11 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
+
+// Add with other imports
+const jwt = require("jsonwebtoken");
+const { sendEmail, getPasswordResetEmail } = require("./config/email");
+
 require("dotenv").config();
 
 // Import Models
@@ -283,6 +288,54 @@ app.post("/api/login", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Erreur serveur",
+    });
+  }
+});
+
+// Reset password with token
+app.post("/api/reset-password", async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  if (!token || !newPassword) {
+    return res.status(400).json({
+      success: false,
+      message: "Token et nouveau mot de passe requis",
+    });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({
+      success: false,
+      message: "Le mot de passe doit contenir au moins 6 caractères",
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "Utilisateur non trouvé",
+      });
+    }
+
+    // Update password (will be hashed by the pre-save hook)
+    user.password = newPassword;
+    await user.save();
+
+    console.log(`✅ Password reset for user: ${user.email}`);
+
+    res.json({
+      success: true,
+      message: "Mot de passe réinitialisé avec succès !",
+    });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    res.status(400).json({
+      success: false,
+      message: "Lien invalide ou expiré",
     });
   }
 });
