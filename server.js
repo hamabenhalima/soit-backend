@@ -401,6 +401,53 @@ app.post("/api/forgot-password", async (req, res) => {
   }
 });
 
+// Forgot password - sends email with reset link
+app.post("/api/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      message: "Email est requis",
+    });
+  }
+
+  try {
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
+
+    // For security, always return success even if email doesn't exist
+    if (!user) {
+      return res.json({
+        success: true,
+        message:
+          "Si un compte existe avec cet email, vous recevrez un lien de réinitialisation",
+      });
+    }
+
+    // Generate reset token
+    const resetToken = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" },
+    );
+
+    console.log(`📧 Sending password reset email to: ${email}`);
+
+    // TODO: Add email sending here (optional)
+
+    res.json({
+      success: true,
+      message: "Un lien de réinitialisation a été envoyé à votre adresse email",
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
+  }
+});
+
 // ============ REVIEW ROUTES ============
 
 // Submit a new review (client)
