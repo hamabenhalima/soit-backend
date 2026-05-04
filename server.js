@@ -22,6 +22,8 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
 });
+const compression = require("compression");
+app.use(compression());
 
 // ============ MIDDLEWARE ============
 app.use(cors());
