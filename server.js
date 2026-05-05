@@ -4,6 +4,11 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
+const compression = require("compression");
+
+const { Resend } = require("resend");
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 require("dotenv").config();
 
 // Import Models
@@ -14,21 +19,39 @@ const Review = require("./models/Review");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ============ EMAIL TRANSPORTER ============
+// ============ MIDDLEWARE ============
+app.use(compression());
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// ============ CONFIGURATION NODEMAILER CORRIGÉE ============
+// Configuration pour Gmail avec les bons paramètres
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false, // false pour port 587
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  tls: {
+    rejectUnauthorized: false,
+  },
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000,
 });
-const compression = require("compression");
-app.use(compression());
 
-// ============ MIDDLEWARE ============
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Vérifier la connexion email au démarrage
+transporter.verify((error, success) => {
+  if (error) {
+    console.error("❌ Erreur de connexion email:", error.message);
+    console.log("⚠️ Vérifiez vos variables EMAIL_USER et EMAIL_PASS");
+  } else {
+    console.log("✅ Serveur email prêt à envoyer des messages");
+  }
+});
 
 // ============ MONGODB CONNECTION ============
 const connectDB = async () => {
@@ -49,7 +72,6 @@ const connectDB = async () => {
 
 connectDB();
 
-// Handle connection events
 mongoose.connection.on("disconnected", () => {
   console.log("⚠️ MongoDB disconnected, attempting to reconnect...");
   setTimeout(connectDB, 5000);
@@ -60,7 +82,6 @@ mongoose.connection.on("error", (err) => {
 });
 
 // ============ WELCOME ROUTES ============
-
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -104,8 +125,6 @@ app.get("/health", (req, res) => {
 });
 
 // ============ CONTACT ROUTES ============
-
-// Contact form submission
 app.post("/api/contact", async (req, res) => {
   const { name, email, phone, message } = req.body;
 
@@ -140,7 +159,6 @@ app.post("/api/contact", async (req, res) => {
   }
 });
 
-// Get all contacts
 app.get("/api/contacts", async (req, res) => {
   try {
     const contacts = await Contact.find().sort({ createdAt: -1 });
@@ -154,7 +172,6 @@ app.get("/api/contacts", async (req, res) => {
   }
 });
 
-// Get single contact by ID
 app.get("/api/contacts/:id", async (req, res) => {
   try {
     const contact = await Contact.findById(req.params.id);
@@ -173,7 +190,6 @@ app.get("/api/contacts/:id", async (req, res) => {
   }
 });
 
-// Delete contact
 app.delete("/api/contacts/:id", async (req, res) => {
   try {
     const deleted = await Contact.findByIdAndDelete(req.params.id);
@@ -196,8 +212,6 @@ app.delete("/api/contacts/:id", async (req, res) => {
 });
 
 // ============ USER ROUTES ============
-
-// User registration
 app.post("/api/register", async (req, res) => {
   const { username, email, password } = req.body;
 
@@ -252,7 +266,6 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-// User login
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -280,11 +293,19 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
+    // Générer un token JWT
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" },
+    );
+
     console.log(`🔐 User logged in: ${user.username} (${user.email})`);
 
     res.json({
       success: true,
       message: "Connexion réussie !",
+      token,
       user: {
         id: user._id,
         username: user.username,
@@ -301,7 +322,6 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// Get statistics
 app.get("/api/stats", async (req, res) => {
   try {
     const totalMessages = await Contact.countDocuments();
@@ -325,11 +345,11 @@ app.get("/api/stats", async (req, res) => {
   }
 });
 
-// ============ FORGOT PASSWORD & RESET PASSWORD ============
-
-// Forgot password - sends email with reset link
+// ============ FORGOT PASSWORD AVEC RESEND ============
 app.post("/api/forgot-password", async (req, res) => {
   const { email } = req.body;
+
+  console.log("📧 Demande de réinitialisation pour:", email);
 
   if (!email) {
     return res.status(400).json({
@@ -341,8 +361,9 @@ app.post("/api/forgot-password", async (req, res) => {
   try {
     const user = await User.findOne({ email: email.trim().toLowerCase() });
 
-    // For security, always return success even if email doesn't exist
+    // Sécurité : on répond toujours "success" même si l'email n'existe pas
     if (!user) {
+      console.log(`❌ Utilisateur non trouvé: ${email}`);
       return res.json({
         success: true,
         message:
@@ -350,7 +371,9 @@ app.post("/api/forgot-password", async (req, res) => {
       });
     }
 
-    // Generate reset token
+    console.log(`✅ Utilisateur trouvé: ${user.email}`);
+
+    // Générer le token JWT
     const resetToken = jwt.sign(
       { id: user._id, email: user.email },
       process.env.JWT_SECRET,
@@ -359,71 +382,100 @@ app.post("/api/forgot-password", async (req, res) => {
 
     const resetLink = `https://hamabenhalima.github.io/SOIT-Infrastructure-Website/reset-password.html?token=${resetToken}`;
 
-    // Email HTML template
-    const emailHtml = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <style>
-                    body { font-family: Arial, sans-serif; line-height: 1.6; }
-                    .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px; }
-                    .header { background: #2370f5; color: white; padding: 15px; text-align: center; border-radius: 5px; }
-                    .btn { display: inline-block; background: #2370f5; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
-                    .footer { font-size: 12px; color: #999; text-align: center; margin-top: 20px; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h2>🔐 Réinitialisation de votre mot de passe</h2>
-                    </div>
-                    <p>Bonjour ${user.username},</p>
-                    <p>Vous avez demandé à réinitialiser votre mot de passe pour votre compte SOIT.</p>
-                    <p>Cliquez sur le bouton ci-dessous pour créer un nouveau mot de passe :</p>
-                    <div style="text-align: center;">
-                        <a href="${resetLink}" class="btn">Réinitialiser mon mot de passe</a>
-                    </div>
-                    <p>Ce lien expirera dans 1 heure pour des raisons de sécurité.</p>
-                    <p>Si vous n'avez pas demandé cette réinitialisation, ignorez simplement cet email.</p>
-                    <div class="footer">
-                        <p>SOIT - Société El Oukhoua d'Infrastructure et de Travaux</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-        `;
+    console.log("🔗 LIEN GÉNÉRÉ:", resetLink);
 
-    // Send email
-    await transporter.sendMail({
-      from: `"SOIT" <${process.env.EMAIL_USER}>`,
+    // ============ ENVOI AVEC RESEND ============
+    const { data, error } = await resend.emails.send({
+      from: process.env.RESEND_FROM_EMAIL, // Ex: "SOIT <noreply@soit.com>"
       to: user.email,
       subject: "🔐 Réinitialisation de votre mot de passe - SOIT",
-      html: emailHtml,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+        </head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #2370f5, #1a5cd8); padding: 20px; text-align: center;">
+            <h1 style="color: white; margin: 0;">🔐 SOIT Infrastructure</h1>
+          </div>
+          
+          <div style="padding: 30px 20px; background: #f9f9f9;">
+            <h2 style="color: #2370f5;">Bonjour ${user.username || user.firstName || "Cher client"} !</h2>
+            
+            <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
+            
+            <p>Cliquez sur le bouton ci-dessous pour créer un nouveau mot de passe :</p>
+            
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${resetLink}" 
+                 style="background: linear-gradient(135deg, #2370f5, #1a5cd8); 
+                        color: white; 
+                        padding: 12px 30px; 
+                        text-decoration: none; 
+                        border-radius: 50px; 
+                        font-weight: bold;
+                        display: inline-block;">
+                🔑 Réinitialiser mon mot de passe
+              </a>
+            </div>
+            
+            <p style="font-size: 14px; color: #666;">Ce lien expirera dans <strong>1 heure</strong>.</p>
+            
+            <p style="font-size: 12px; color: #999;">Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
+          </div>
+          
+          <div style="background: #2370f5; padding: 15px; text-align: center; font-size: 12px; color: white;">
+            <p style="margin: 0;">© 2024 SOIT - Société El Oukhoua d'Infrastructure et Travaux</p>
+            <p style="margin: 5px 0 0;">📞 +216 12 45 77 85 | ✉️ groupesoit@gmail.com</p>
+          </div>
+        </body>
+        </html>
+      `,
     });
 
-    console.log(`✅ Password reset email sent to: ${user.email}`);
+    if (error) {
+      console.error("❌ Erreur Resend:", error);
+      throw new Error(error.message);
+    }
+
+    console.log(`✅ Email envoyé avec Resend à: ${user.email}`);
+    console.log("📨 Message ID:", data?.id);
 
     res.json({
       success: true,
       message: "Un lien de réinitialisation a été envoyé à votre adresse email",
     });
   } catch (error) {
-    console.error("Forgot password error:", error);
+    console.error("❌ Forgot password error:", error);
     res.status(500).json({
       success: false,
-      message: "Erreur serveur",
+      message: "Erreur lors de l'envoi. Veuillez réessayer.",
     });
   }
 });
 
-// Reset password with token
+// ============ RESET PASSWORD ============
 app.post("/api/reset-password", async (req, res) => {
   const { token, newPassword } = req.body;
 
-  if (!token || !newPassword) {
+  console.log("📥 Reset password request received");
+  console.log(
+    "Token reçu:",
+    token ? token.substring(0, 30) + "..." : "Non fourni",
+  );
+
+  if (!token) {
     return res.status(400).json({
       success: false,
-      message: "Token et nouveau mot de passe requis",
+      message: "Token requis. Veuillez refaire une demande.",
+    });
+  }
+
+  if (!newPassword) {
+    return res.status(400).json({
+      success: false,
+      message: "Nouveau mot de passe requis",
     });
   }
 
@@ -435,7 +487,11 @@ app.post("/api/reset-password", async (req, res) => {
   }
 
   try {
+    // Vérifier le token JWT
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log("✅ Token valide, ID utilisateur:", decoded.id);
+
+    // Trouver l'utilisateur
     const user = await User.findById(decoded.id);
 
     if (!user) {
@@ -445,28 +501,44 @@ app.post("/api/reset-password", async (req, res) => {
       });
     }
 
-    // Update password (will be hashed by the pre-save hook)
+    console.log("✅ Utilisateur trouvé:", user.email);
+
+    // Mettre à jour le mot de passe
     user.password = newPassword;
     await user.save();
 
-    console.log(`✅ Password reset for user: ${user.email}`);
+    console.log(`✅ Mot de passe réinitialisé pour: ${user.email}`);
 
     res.json({
       success: true,
-      message: "Mot de passe réinitialisé avec succès !",
+      message:
+        "Mot de passe réinitialisé avec succès ! Vous pouvez maintenant vous connecter.",
     });
   } catch (error) {
-    console.error("Reset password error:", error);
-    res.status(400).json({
+    console.error("❌ Reset password error:", error.message);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(400).json({
+        success: false,
+        message: "Lien invalide. Veuillez refaire une demande.",
+      });
+    }
+
+    if (error.name === "TokenExpiredError") {
+      return res.status(400).json({
+        success: false,
+        message: "Lien expiré. Veuillez refaire une demande.",
+      });
+    }
+
+    res.status(500).json({
       success: false,
-      message: "Lien invalide ou expiré",
+      message: "Erreur serveur. Veuillez réessayer.",
     });
   }
 });
 
 // ============ REVIEW ROUTES ============
-
-// Submit a new review (client)
 app.post("/api/reviews", async (req, res) => {
   const { name, email, rating, comment } = req.body;
 
@@ -516,7 +588,6 @@ app.post("/api/reviews", async (req, res) => {
   }
 });
 
-// Get approved reviews (for website display)
 app.get("/api/reviews", async (req, res) => {
   try {
     const reviews = await Review.find({ status: "approved" })
@@ -533,8 +604,6 @@ app.get("/api/reviews", async (req, res) => {
 });
 
 // ============ ADMIN ROUTES ============
-
-// Get all users (for admin dashboard)
 app.get("/api/users", async (req, res) => {
   try {
     const users = await User.find().select("-password").sort({ createdAt: -1 });
@@ -545,7 +614,6 @@ app.get("/api/users", async (req, res) => {
   }
 });
 
-// Delete review (admin)
 app.delete("/api/admin/reviews/:id", async (req, res) => {
   try {
     const deleted = await Review.findByIdAndDelete(req.params.id);
@@ -565,7 +633,6 @@ app.delete("/api/admin/reviews/:id", async (req, res) => {
 async function createDefaultAdmin() {
   try {
     if (mongoose.connection.readyState !== 1) {
-      console.log("⏳ Waiting for database connection to create admin...");
       setTimeout(createDefaultAdmin, 2000);
       return;
     }
