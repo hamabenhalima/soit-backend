@@ -1,15 +1,18 @@
+require("dotenv").config();
+console.log("🔑 RESEND_API_KEY existe ?", !!process.env.RESEND_API_KEY);
+console.log(
+  "📧 RESEND_FROM_EMAIL:",
+  process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev (par défaut)",
+);
+
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
 const compression = require("compression");
-
+const rateLimit = require("express-rate-limit");
 const { Resend } = require("resend");
-const resend = new Resend(process.env.RESEND_API_KEY);
-
-require("dotenv").config();
 
 // Import Models
 const Contact = require("./models/Contact");
@@ -19,39 +22,34 @@ const Review = require("./models/Review");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ============ RESEND CONFIGURATION ============
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+// ============ RATE LIMITING (sécurité) ============
+const forgotLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 tentatives max
+  message: {
+    success: false,
+    message: "Trop de tentatives. Veuillez réessayer dans 15 minutes.",
+  },
+  skipSuccessfulRequests: true,
+});
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: {
+    success: false,
+    message: "Trop de tentatives de connexion. Réessayez dans 15 minutes.",
+  },
+});
+
 // ============ MIDDLEWARE ============
 app.use(compression());
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// ============ CONFIGURATION NODEMAILER CORRIGÉE ============
-// Configuration pour Gmail avec les bons paramètres
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false, // false pour port 587
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  tls: {
-    rejectUnauthorized: false,
-  },
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000,
-});
-
-// Vérifier la connexion email au démarrage
-transporter.verify((error, success) => {
-  if (error) {
-    console.error("❌ Erreur de connexion email:", error.message);
-    console.log("⚠️ Vérifiez vos variables EMAIL_USER et EMAIL_PASS");
-  } else {
-    console.log("✅ Serveur email prêt à envoyer des messages");
-  }
-});
 
 // ============ MONGODB CONNECTION ============
 const connectDB = async () => {
@@ -85,7 +83,7 @@ mongoose.connection.on("error", (err) => {
 app.get("/", (req, res) => {
   res.json({
     success: true,
-    message: "SOIT Backend is running with MongoDB!",
+    message: "SOIT Backend is running with MongoDB & Resend!",
     status: "active",
     timestamp: new Date().toISOString(),
   });
@@ -97,9 +95,11 @@ app.get("/api", (req, res) => {
     message: "Welcome to SOIT API",
     version: "2.0.0",
     database: "MongoDB Atlas",
+    email: "Resend with soit.com",
     endpoints: {
       root: "GET /",
       api: "GET /api",
+      health: "GET /health",
       contact: "POST /api/contact",
       login: "POST /api/login",
       register: "POST /api/register",
@@ -266,7 +266,7 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-app.post("/api/login", async (req, res) => {
+app.post("/api/login", loginLimiter, async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
@@ -293,7 +293,6 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
-    // Générer un token JWT
     const token = jwt.sign(
       { id: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
@@ -345,11 +344,9 @@ app.get("/api/stats", async (req, res) => {
   }
 });
 
-// ============ FORGOT PASSWORD AVEC RESEND ============
-app.post("/api/forgot-password", async (req, res) => {
+// ============ FORGOT PASSWORD (avec Resend) ============
+app.post("/api/forgot-password", forgotLimiter, async (req, res) => {
   const { email } = req.body;
-
-  console.log("📧 Demande de réinitialisation pour:", email);
 
   if (!email) {
     return res.status(400).json({
@@ -361,9 +358,7 @@ app.post("/api/forgot-password", async (req, res) => {
   try {
     const user = await User.findOne({ email: email.trim().toLowerCase() });
 
-    // Sécurité : on répond toujours "success" même si l'email n'existe pas
     if (!user) {
-      console.log(`❌ Utilisateur non trouvé: ${email}`);
       return res.json({
         success: true,
         message:
@@ -371,9 +366,6 @@ app.post("/api/forgot-password", async (req, res) => {
       });
     }
 
-    console.log(`✅ Utilisateur trouvé: ${user.email}`);
-
-    // Générer le token JWT
     const resetToken = jwt.sign(
       { id: user._id, email: user.email },
       process.env.JWT_SECRET,
@@ -384,51 +376,23 @@ app.post("/api/forgot-password", async (req, res) => {
 
     console.log("🔗 LIEN GÉNÉRÉ:", resetLink);
 
-    // ============ ENVOI AVEC RESEND ============
     const { data, error } = await resend.emails.send({
-      from: process.env.RESEND_FROM_EMAIL, // Ex: "SOIT <noreply@soit.com>"
+      from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
       to: user.email,
       subject: "🔐 Réinitialisation de votre mot de passe - SOIT",
       html: `
         <!DOCTYPE html>
         <html>
-        <head>
-          <meta charset="UTF-8">
-        </head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto;">
-          <div style="background: linear-gradient(135deg, #2370f5, #1a5cd8); padding: 20px; text-align: center;">
-            <h1 style="color: white; margin: 0;">🔐 SOIT Infrastructure</h1>
-          </div>
-          
-          <div style="padding: 30px 20px; background: #f9f9f9;">
-            <h2 style="color: #2370f5;">Bonjour ${user.username || user.firstName || "Cher client"} !</h2>
-            
-            <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
-            
-            <p>Cliquez sur le bouton ci-dessous pour créer un nouveau mot de passe :</p>
-            
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${resetLink}" 
-                 style="background: linear-gradient(135deg, #2370f5, #1a5cd8); 
-                        color: white; 
-                        padding: 12px 30px; 
-                        text-decoration: none; 
-                        border-radius: 50px; 
-                        font-weight: bold;
-                        display: inline-block;">
-                🔑 Réinitialiser mon mot de passe
-              </a>
-            </div>
-            
-            <p style="font-size: 14px; color: #666;">Ce lien expirera dans <strong>1 heure</strong>.</p>
-            
-            <p style="font-size: 12px; color: #999;">Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
-          </div>
-          
-          <div style="background: #2370f5; padding: 15px; text-align: center; font-size: 12px; color: white;">
-            <p style="margin: 0;">© 2024 SOIT - Société El Oukhoua d'Infrastructure et Travaux</p>
-            <p style="margin: 5px 0 0;">📞 +216 12 45 77 85 | ✉️ groupesoit@gmail.com</p>
-          </div>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding: 40px;">
+          <h2 style="color: #2370f5;">🔐 SOIT Infrastructure</h2>
+          <p>Bonjour <strong>${user.username || "Cher client"}</strong>,</p>
+          <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
+          <a href="${resetLink}" style="background: #2370f5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0;">Réinitialiser mon mot de passe</a>
+          <p>Ce lien expirera dans <strong>1 heure</strong>.</p>
+          <p>Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
+          <hr>
+          <p style="font-size: 12px; color: #999;">SOIT - Infrastructure & Travaux</p>
         </body>
         </html>
       `,
@@ -487,11 +451,9 @@ app.post("/api/reset-password", async (req, res) => {
   }
 
   try {
-    // Vérifier le token JWT
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     console.log("✅ Token valide, ID utilisateur:", decoded.id);
 
-    // Trouver l'utilisateur
     const user = await User.findById(decoded.id);
 
     if (!user) {
@@ -503,7 +465,6 @@ app.post("/api/reset-password", async (req, res) => {
 
     console.log("✅ Utilisateur trouvé:", user.email);
 
-    // Mettre à jour le mot de passe
     user.password = newPassword;
     await user.save();
 
@@ -670,6 +631,7 @@ app.listen(PORT, async () => {
     ║   Status:     ✅ Running                                    ║
     ║   Port:       ${PORT}                                            ║
     ║   Database:   MongoDB Atlas                                 ║
+    ║   Email:      Resend (${process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev"})║
     ║   API:        http://localhost:${PORT}/api                      ║
     ╚══════════════════════════════════════════════════════════════╝
     `);
