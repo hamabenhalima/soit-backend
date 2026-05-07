@@ -1,8 +1,11 @@
 require("dotenv").config();
-console.log("🔑 RESEND_API_KEY existe ?", !!process.env.RESEND_API_KEY);
 console.log(
-  "📧 RESEND_FROM_EMAIL:",
-  process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev (par défaut)",
+  "📧 EMAIL_USER:",
+  process.env.EMAIL_USER ? "✅ Configuré" : "❌ Manquant",
+);
+console.log(
+  "🔑 EMAIL_PASS:",
+  process.env.EMAIL_PASS ? "✅ Configuré" : "❌ Manquant",
 );
 
 const express = require("express");
@@ -12,7 +15,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
-const { Resend } = require("resend");
+const nodemailer = require("nodemailer");
 
 // Import Models
 const Contact = require("./models/Contact");
@@ -22,27 +25,43 @@ const Review = require("./models/Review");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ============ RESEND CONFIGURATION ============
-const resend = new Resend(process.env.RESEND_API_KEY);
+// ============ CONFIGURATION NODEMAILER (GMAIL) ============
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+  tls: {
+    rejectUnauthorized: false,
+  },
+});
 
-// ============ RATE LIMITING (sécurité) ============
+// Vérification de la connexion email
+transporter.verify((error, success) => {
+  if (error) {
+    console.error("❌ Erreur de connexion Gmail:", error.message);
+  } else {
+    console.log("✅ Serveur Gmail prêt");
+  }
+});
+
+// ============ RATE LIMITING ============
 const forgotLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minutes
-  max: 20, // 20 tentatives max
+  windowMs: 15 * 60 * 1000,
+  max: 5,
   message: {
     success: false,
-    message: "Trop de tentatives. Veuillez réessayer dans 15 minutes.",
+    message: "Trop de tentatives. Réessayez dans 15 minutes.",
   },
-  skipSuccessfulRequests: true,
 });
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  message: {
-    success: false,
-    message: "Trop de tentatives de connexion. Réessayez dans 15 minutes.",
-  },
+  message: { success: false, message: "Trop de tentatives de connexion." },
 });
 
 // ============ MIDDLEWARE ============
@@ -54,85 +73,33 @@ app.use(express.urlencoded({ extended: true }));
 // ============ MONGODB CONNECTION ============
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 30000,
-      socketTimeoutMS: 45000,
-      connectTimeoutMS: 30000,
-      heartbeatFrequencyMS: 10000,
-    });
-    console.log("✅ MongoDB connected successfully");
+    await mongoose.connect(process.env.MONGODB_URI);
+    console.log("✅ MongoDB connected");
   } catch (error) {
-    console.error("❌ MongoDB connection error:", error.message);
-    console.log("⚠️ Retrying connection in 5 seconds...");
+    console.error("❌ MongoDB error:", error.message);
     setTimeout(connectDB, 5000);
   }
 };
-
 connectDB();
 
-mongoose.connection.on("disconnected", () => {
-  console.log("⚠️ MongoDB disconnected, attempting to reconnect...");
-  setTimeout(connectDB, 5000);
-});
+// ============ ROUTES ============
 
-mongoose.connection.on("error", (err) => {
-  console.error("❌ MongoDB error:", err.message);
-});
-
-// ============ WELCOME ROUTES ============
 app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    message: "SOIT Backend is running with MongoDB & Resend!",
-    status: "active",
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ success: true, message: "SOIT Backend with Nodemailer" });
 });
 
 app.get("/api", (req, res) => {
-  res.json({
-    success: true,
-    message: "Welcome to SOIT API",
-    version: "2.0.0",
-    database: "MongoDB Atlas",
-    email: "Resend with soit.com",
-    endpoints: {
-      root: "GET /",
-      api: "GET /api",
-      health: "GET /health",
-      contact: "POST /api/contact",
-      login: "POST /api/login",
-      register: "POST /api/register",
-      contacts: "GET /api/contacts",
-      stats: "GET /api/stats",
-      deleteContact: "DELETE /api/contacts/:id",
-      forgotPassword: "POST /api/forgot-password",
-      resetPassword: "POST /api/reset-password",
-      reviews: "GET /api/reviews",
-      users: "GET /api/users",
-    },
-  });
+  res.json({ success: true, message: "SOIT API - Nodemailer" });
 });
 
-app.get("/health", (req, res) => {
-  res.json({
-    success: true,
-    status: "healthy",
-    dbConnected: mongoose.connection.readyState === 1,
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// ============ CONTACT ROUTES ============
+// ============ CONTACT ============
 app.post("/api/contact", async (req, res) => {
   const { name, email, phone, message } = req.body;
 
   if (!name || !email || !message) {
-    return res.status(400).json({
-      success: false,
-      message: "Nom, email et message sont requis",
-    });
+    return res
+      .status(400)
+      .json({ success: false, message: "Tous les champs sont requis" });
   }
 
   try {
@@ -143,19 +110,9 @@ app.post("/api/contact", async (req, res) => {
       message: message.trim(),
     });
     await newContact.save();
-
-    console.log(`📧 New message from ${name} (${email})`);
-
-    res.json({
-      success: true,
-      message: "Message envoyé avec succès !",
-    });
+    res.json({ success: true, message: "Message envoyé !" });
   } catch (error) {
-    console.error("Contact error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
@@ -164,105 +121,57 @@ app.get("/api/contacts", async (req, res) => {
     const contacts = await Contact.find().sort({ createdAt: -1 });
     res.json({ success: true, contacts });
   } catch (error) {
-    console.error("Get contacts error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
-  }
-});
-
-app.get("/api/contacts/:id", async (req, res) => {
-  try {
-    const contact = await Contact.findById(req.params.id);
-    if (!contact) {
-      return res.status(404).json({
-        success: false,
-        message: "Message non trouvé",
-      });
-    }
-    res.json({ success: true, contact });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
 app.delete("/api/contacts/:id", async (req, res) => {
   try {
-    const deleted = await Contact.findByIdAndDelete(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({
-        success: false,
-        message: "Message non trouvé",
-      });
-    }
-    res.json({
-      success: true,
-      message: "Message supprimé avec succès",
-    });
+    await Contact.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: "Supprimé" });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
-// ============ USER ROUTES ============
+// ============ AUTH ============
 app.post("/api/register", async (req, res) => {
   const { username, email, password } = req.body;
 
   if (!username || !email || !password) {
-    return res.status(400).json({
-      success: false,
-      message: "Tous les champs sont requis",
-    });
+    return res
+      .status(400)
+      .json({ success: false, message: "Tous les champs sont requis" });
   }
 
   if (password.length < 6) {
-    return res.status(400).json({
-      success: false,
-      message: "Le mot de passe doit contenir au moins 6 caractères",
-    });
+    return res
+      .status(400)
+      .json({ success: false, message: "Mot de passe trop court (min 6)" });
   }
 
   try {
-    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: "Email ou nom d'utilisateur déjà utilisé",
-      });
+    const existing = await User.findOne({ $or: [{ email }, { username }] });
+    if (existing) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Email ou username déjà utilisé" });
     }
 
     const newUser = new User({
-      username: username.trim(),
-      email: email.trim().toLowerCase(),
+      username,
+      email: email.toLowerCase(),
       password,
     });
     await newUser.save();
 
-    console.log(`📝 New user registered: ${username} (${email})`);
-
     res.json({
       success: true,
       message: "Inscription réussie !",
-      user: {
-        id: newUser._id,
-        username: newUser.username,
-        email: newUser.email,
-        role: newUser.role,
-      },
+      user: { id: newUser._id, username, email, role: newUser.role },
     });
   } catch (error) {
-    console.error("Registration error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
@@ -270,27 +179,17 @@ app.post("/api/login", loginLimiter, async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({
-      success: false,
-      message: "Email et mot de passe requis",
-    });
+    return res
+      .status(400)
+      .json({ success: false, message: "Email et mot de passe requis" });
   }
 
   try {
-    const user = await User.findOne({ email: email.trim().toLowerCase() });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "Email ou mot de passe incorrect",
-      });
-    }
-
-    const isValidPassword = await user.comparePassword(password);
-    if (!isValidPassword) {
-      return res.status(401).json({
-        success: false,
-        message: "Email ou mot de passe incorrect",
-      });
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user || !(await user.comparePassword(password))) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Email ou mot de passe incorrect" });
     }
 
     const token = jwt.sign(
@@ -299,11 +198,9 @@ app.post("/api/login", loginLimiter, async (req, res) => {
       { expiresIn: "7d" },
     );
 
-    console.log(`🔐 User logged in: ${user.username} (${user.email})`);
-
     res.json({
       success: true,
-      message: "Connexion réussie !",
+      message: "Connexion réussie",
       token,
       user: {
         id: user._id,
@@ -313,56 +210,24 @@ app.post("/api/login", loginLimiter, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
-app.get("/api/stats", async (req, res) => {
-  try {
-    const totalMessages = await Contact.countDocuments();
-    const unreadMessages = await Contact.countDocuments({ read: false });
-    const totalUsers = await User.countDocuments();
-
-    res.json({
-      success: true,
-      stats: {
-        totalMessages,
-        unreadMessages,
-        totalUsers,
-      },
-    });
-  } catch (error) {
-    console.error("Stats error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
-  }
-});
-
-// ============ FORGOT PASSWORD (avec Resend) ============
+// ============ FORGOT PASSWORD (NODEMAILER) ============
 app.post("/api/forgot-password", forgotLimiter, async (req, res) => {
   const { email } = req.body;
 
   if (!email) {
-    return res.status(400).json({
-      success: false,
-      message: "Email est requis",
-    });
+    return res.status(400).json({ success: false, message: "Email requis" });
   }
 
   try {
-    const user = await User.findOne({ email: email.trim().toLowerCase() });
-
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       return res.json({
         success: true,
-        message:
-          "Si un compte existe avec cet email, vous recevrez un lien de réinitialisation",
+        message: "Si l'email existe, un lien a été envoyé",
       });
     }
 
@@ -371,51 +236,20 @@ app.post("/api/forgot-password", forgotLimiter, async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "1h" },
     );
-
     const resetLink = `https://hamabenhalima.github.io/SOIT-Infrastructure-Website/reset-password.html?token=${resetToken}`;
 
-    console.log("🔗 LIEN GÉNÉRÉ:", resetLink);
-
-    const { data, error } = await resend.emails.send({
-      from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
+    await transporter.sendMail({
+      from: `"SOIT" <${process.env.EMAIL_USER}>`,
       to: user.email,
-      subject: "🔐 Réinitialisation de votre mot de passe - SOIT",
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="UTF-8"></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 40px;">
-          <h2 style="color: #2370f5;">🔐 SOIT Infrastructure</h2>
-          <p>Bonjour <strong>${user.username || "Cher client"}</strong>,</p>
-          <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
-          <a href="${resetLink}" style="background: #2370f5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0;">Réinitialiser mon mot de passe</a>
-          <p>Ce lien expirera dans <strong>1 heure</strong>.</p>
-          <p>Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
-          <hr>
-          <p style="font-size: 12px; color: #999;">SOIT - Infrastructure & Travaux</p>
-        </body>
-        </html>
-      `,
+      subject: "Réinitialisation de votre mot de passe",
+      html: `<a href="${resetLink}">Cliquez ici pour réinitialiser</a><br><p>Ce lien expire dans 1 heure.</p>`,
     });
 
-    if (error) {
-      console.error("❌ Erreur Resend:", error);
-      throw new Error(error.message);
-    }
-
-    console.log(`✅ Email envoyé avec Resend à: ${user.email}`);
-    console.log("📨 Message ID:", data?.id);
-
-    res.json({
-      success: true,
-      message: "Un lien de réinitialisation a été envoyé à votre adresse email",
-    });
+    console.log(`✅ Email envoyé à: ${user.email}`);
+    res.json({ success: true, message: "Email envoyé !" });
   } catch (error) {
-    console.error("❌ Forgot password error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur lors de l'envoi. Veuillez réessayer.",
-    });
+    console.error("Erreur:", error);
+    res.status(500).json({ success: false, message: "Erreur d'envoi" });
   }
 });
 
@@ -423,129 +257,64 @@ app.post("/api/forgot-password", forgotLimiter, async (req, res) => {
 app.post("/api/reset-password", async (req, res) => {
   const { token, newPassword } = req.body;
 
-  console.log("📥 Reset password request received");
-  console.log(
-    "Token reçu:",
-    token ? token.substring(0, 30) + "..." : "Non fourni",
-  );
-
-  if (!token) {
+  if (!token || !newPassword || newPassword.length < 6) {
     return res.status(400).json({
       success: false,
-      message: "Token requis. Veuillez refaire une demande.",
-    });
-  }
-
-  if (!newPassword) {
-    return res.status(400).json({
-      success: false,
-      message: "Nouveau mot de passe requis",
-    });
-  }
-
-  if (newPassword.length < 6) {
-    return res.status(400).json({
-      success: false,
-      message: "Le mot de passe doit contenir au moins 6 caractères",
+      message: "Token et mot de passe (min 6) requis",
     });
   }
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log("✅ Token valide, ID utilisateur:", decoded.id);
-
     const user = await User.findById(decoded.id);
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "Utilisateur non trouvé",
-      });
-    }
-
-    console.log("✅ Utilisateur trouvé:", user.email);
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "Utilisateur non trouvé" });
 
     user.password = newPassword;
     await user.save();
 
-    console.log(`✅ Mot de passe réinitialisé pour: ${user.email}`);
-
-    res.json({
-      success: true,
-      message:
-        "Mot de passe réinitialisé avec succès ! Vous pouvez maintenant vous connecter.",
-    });
+    res.json({ success: true, message: "Mot de passe réinitialisé !" });
   } catch (error) {
-    console.error("❌ Reset password error:", error.message);
-
-    if (error.name === "JsonWebTokenError") {
-      return res.status(400).json({
-        success: false,
-        message: "Lien invalide. Veuillez refaire une demande.",
-      });
-    }
-
-    if (error.name === "TokenExpiredError") {
-      return res.status(400).json({
-        success: false,
-        message: "Lien expiré. Veuillez refaire une demande.",
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur. Veuillez réessayer.",
-    });
+    if (error.name === "TokenExpiredError")
+      return res.status(400).json({ success: false, message: "Lien expiré" });
+    if (error.name === "JsonWebTokenError")
+      return res.status(400).json({ success: false, message: "Lien invalide" });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
-// ============ REVIEW ROUTES ============
+// ============ REVIEWS ============
 app.post("/api/reviews", async (req, res) => {
   const { name, email, rating, comment } = req.body;
 
-  if (!name || !email || !rating || !comment) {
-    return res.status(400).json({
-      success: false,
-      message: "Tous les champs sont requis",
-    });
-  }
-
-  if (rating < 1 || rating > 5) {
-    return res.status(400).json({
-      success: false,
-      message: "La note doit être entre 1 et 5",
-    });
-  }
-
-  if (comment.length < 10) {
-    return res.status(400).json({
-      success: false,
-      message: "Le commentaire doit contenir au moins 10 caractères",
-    });
+  if (
+    !name ||
+    !email ||
+    !rating ||
+    !comment ||
+    comment.length < 10 ||
+    rating < 1 ||
+    rating > 5
+  ) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Champs invalides" });
   }
 
   try {
     const newReview = new Review({
-      name: name.trim(),
-      email: email.trim().toLowerCase(),
+      name,
+      email: email.toLowerCase(),
       rating: parseInt(rating),
-      comment: comment.trim(),
+      comment,
       status: "approved",
     });
     await newReview.save();
-
-    console.log(`⭐ New review from ${name} (${rating} stars)`);
-
-    res.json({
-      success: true,
-      message: "Merci pour votre avis !",
-    });
+    res.json({ success: true, message: "Merci pour votre avis !" });
   } catch (error) {
-    console.error("Review error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
@@ -556,93 +325,21 @@ app.get("/api/reviews", async (req, res) => {
       .limit(10);
     res.json({ success: true, reviews });
   } catch (error) {
-    console.error("Get reviews error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Erreur serveur",
-    });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
-// ============ ADMIN ROUTES ============
+// ============ ADMIN ============
 app.get("/api/users", async (req, res) => {
   try {
-    const users = await User.find().select("-password").sort({ createdAt: -1 });
+    const users = await User.find().select("-password");
     res.json({ success: true, users });
   } catch (error) {
-    console.error("Error fetching users:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
-
-app.delete("/api/admin/reviews/:id", async (req, res) => {
-  try {
-    const deleted = await Review.findByIdAndDelete(req.params.id);
-    if (!deleted) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Avis non trouvé" });
-    }
-    res.json({ success: true, message: "Avis supprimé" });
-  } catch (error) {
-    console.error("Delete review error:", error);
-    res.status(500).json({ success: false, message: "Erreur serveur" });
-  }
-});
-
-// ============ CREATE DEFAULT ADMIN USER ============
-async function createDefaultAdmin() {
-  try {
-    if (mongoose.connection.readyState !== 1) {
-      setTimeout(createDefaultAdmin, 2000);
-      return;
-    }
-
-    const adminExists = await User.findOne({ email: "admin@soit.com" });
-
-    if (!adminExists) {
-      const admin = new User({
-        username: "admin",
-        email: "admin@soit.com",
-        password: "admin123",
-        role: "admin",
-      });
-
-      await admin.save();
-      console.log("\n✅ DEFAULT ADMIN USER CREATED!");
-      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-      console.log("   Email:    admin@soit.com");
-      console.log("   Password: admin123");
-      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    } else {
-      console.log("✅ Admin user already exists");
-    }
-  } catch (error) {
-    console.error("❌ Error creating admin:", error.message);
-  }
-}
 
 // ============ START SERVER ============
-app.listen(PORT, async () => {
-  console.log(`
-    ╔══════════════════════════════════════════════════════════════╗
-    ║                    SOIT Backend Server                       ║
-    ╠══════════════════════════════════════════════════════════════╣
-    ║   Status:     ✅ Running                                    ║
-    ║   Port:       ${PORT}                                            ║
-    ║   Database:   MongoDB Atlas                                 ║
-    ║   Email:      Resend (${process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev"})║
-    ║   API:        http://localhost:${PORT}/api                      ║
-    ╚══════════════════════════════════════════════════════════════╝
-    `);
-
-  setTimeout(createDefaultAdmin, 3000);
-});
-
-// ============ GRACEFUL SHUTDOWN ============
-process.on("SIGINT", async () => {
-  console.log("\n⚠️ Shutting down server...");
-  await mongoose.connection.close();
-  console.log("✅ MongoDB connection closed");
-  process.exit(0);
+app.listen(PORT, () => {
+  console.log(`🚀 Serveur démarré sur le port ${PORT}`);
 });
