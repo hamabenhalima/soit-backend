@@ -74,7 +74,7 @@ async function sendBrevoEmail(to, subject, htmlContent, userName = "Client") {
 // ============ RATE LIMITING ============
 const forgotLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: 100,
   message: {
     success: false,
     message: "Trop de tentatives. Réessayez dans 15 minutes.",
