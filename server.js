@@ -1,11 +1,7 @@
 require("dotenv").config();
 console.log(
-  "📧 EMAIL_USER:",
-  process.env.EMAIL_USER ? "✅ Configuré" : "❌ Manquant",
-);
-console.log(
-  "🔑 EMAIL_PASS:",
-  process.env.EMAIL_PASS ? "✅ Configuré" : "❌ Manquant",
+  "🔑 BREVO_API_KEY:",
+  process.env.BREVO_API_KEY ? "✅ Configuré" : "❌ Manquant",
 );
 
 const express = require("express");
@@ -15,7 +11,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
-const nodemailer = require("nodemailer");
+const brevo = require("brevo");
 
 // Import Models
 const Contact = require("./models/Contact");
@@ -25,28 +21,9 @@ const Review = require("./models/Review");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ============ CONFIGURATION NODEMAILER (GMAIL) ============
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  tls: {
-    rejectUnauthorized: false,
-  },
-});
-
-// Vérification de la connexion email
-transporter.verify((error, success) => {
-  if (error) {
-    console.error("❌ Erreur de connexion Gmail:", error.message);
-  } else {
-    console.log("✅ Serveur Gmail prêt");
-  }
-});
+// ============ CONFIGURATION BREVO ============
+const apiInstance = new brevo.TransactionalEmailsApi();
+apiInstance.setApiKey(brevo.ApiKeyKeys.apiKey, process.env.BREVO_API_KEY);
 
 // ============ RATE LIMITING ============
 const forgotLimiter = rateLimit({
@@ -85,11 +62,11 @@ connectDB();
 // ============ ROUTES ============
 
 app.get("/", (req, res) => {
-  res.json({ success: true, message: "SOIT Backend with Nodemailer" });
+  res.json({ success: true, message: "SOIT Backend with Brevo" });
 });
 
 app.get("/api", (req, res) => {
-  res.json({ success: true, message: "SOIT API - Nodemailer" });
+  res.json({ success: true, message: "SOIT API - Brevo" });
 });
 
 // ============ CONTACT ============
@@ -214,7 +191,7 @@ app.post("/api/login", loginLimiter, async (req, res) => {
   }
 });
 
-// ============ FORGOT PASSWORD (NODEMAILER) ============
+// ============ FORGOT PASSWORD (BREVO) ============
 app.post("/api/forgot-password", forgotLimiter, async (req, res) => {
   const { email } = req.body;
 
@@ -238,17 +215,28 @@ app.post("/api/forgot-password", forgotLimiter, async (req, res) => {
     );
     const resetLink = `https://hamabenhalima.github.io/SOIT-Infrastructure-Website/reset-password.html?token=${resetToken}`;
 
-    await transporter.sendMail({
-      from: `"SOIT" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: "Réinitialisation de votre mot de passe",
-      html: `<a href="${resetLink}">Cliquez ici pour réinitialiser</a><br><p>Ce lien expire dans 1 heure.</p>`,
-    });
+    // Configuration de l'email Brevo
+    const sendSmtpEmail = new brevo.SendSmtpEmail();
+    sendSmtpEmail.to = [{ email: user.email, name: user.username || "Client" }];
+    sendSmtpEmail.sender = {
+      email: process.env.BREVO_FROM_EMAIL || "noreply@brevo.com",
+      name: "SOIT Infrastructure",
+    };
+    sendSmtpEmail.subject = "🔐 Réinitialisation de votre mot de passe - SOIT";
+    sendSmtpEmail.htmlContent = `
+      <h2>Réinitialisation de votre mot de passe</h2>
+      <p>Bonjour ${user.username || "Cher client"},</p>
+      <p>Cliquez sur le lien ci-dessous :</p>
+      <a href="${resetLink}">${resetLink}</a>
+      <p>Ce lien expire dans 1 heure.</p>
+    `;
 
-    console.log(`✅ Email envoyé à: ${user.email}`);
+    await apiInstance.sendTransacEmail(sendSmtpEmail);
+
+    console.log(`✅ Email envoyé via Brevo à: ${user.email}`);
     res.json({ success: true, message: "Email envoyé !" });
   } catch (error) {
-    console.error("Erreur:", error);
+    console.error("❌ Erreur Brevo:", error.response?.body || error.message);
     res.status(500).json({ success: false, message: "Erreur d'envoi" });
   }
 });
