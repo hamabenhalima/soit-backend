@@ -11,9 +11,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
-const brevo = require("brevo");
+const https = require("https");
 
-// Import Models
+// Import des modèles
 const Contact = require("./models/Contact");
 const User = require("./models/User");
 const Review = require("./models/Review");
@@ -21,9 +21,55 @@ const Review = require("./models/Review");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ============ CONFIGURATION BREVO ============
-const apiInstance = new brevo.TransactionalEmailsApi();
-apiInstance.setApiKey(brevo.ApiKeyKeys.apiKey, process.env.BREVO_API_KEY);
+// ============ FONCTION POUR ENVOYER DES EMAILS VIA BREVO (API REST) ============
+async function sendBrevoEmail(to, subject, htmlContent, userName = "Client") {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify({
+      sender: {
+        email: process.env.BREVO_FROM_EMAIL || "noreply@brevo.com",
+        name: "SOIT Infrastructure",
+      },
+      to: [{ email: to, name: userName }],
+      subject: subject,
+      htmlContent: htmlContent,
+    });
+
+    const options = {
+      hostname: "api.brevo.com",
+      path: "/v3/smtp/email",
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let responseData = "";
+      res.on("data", (chunk) => {
+        responseData += chunk;
+      });
+      res.on("end", () => {
+        if (res.statusCode === 201) {
+          console.log("✅ Email envoyé via Brevo (API REST)");
+          resolve(true);
+        } else {
+          console.error("❌ Erreur Brevo API:", res.statusCode, responseData);
+          reject(new Error(`HTTP ${res.statusCode}: ${responseData}`));
+        }
+      });
+    });
+
+    req.on("error", (error) => {
+      console.error("❌ Erreur réseau Brevo:", error.message);
+      reject(error);
+    });
+
+    req.write(data);
+    req.end();
+  });
+}
 
 // ============ RATE LIMITING ============
 const forgotLimiter = rateLimit({
@@ -47,22 +93,21 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ============ MONGODB CONNECTION ============
+// ============ CONNEXION MONGODB ============
 const connectDB = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
-    console.log("✅ MongoDB connected");
+    console.log("✅ MongoDB connecté");
   } catch (error) {
-    console.error("❌ MongoDB error:", error.message);
+    console.error("❌ Erreur MongoDB:", error.message);
     setTimeout(connectDB, 5000);
   }
 };
 connectDB();
 
 // ============ ROUTES ============
-
 app.get("/", (req, res) => {
-  res.json({ success: true, message: "SOIT Backend with Brevo" });
+  res.json({ success: true, message: "SOIT Backend avec Brevo (API REST)" });
 });
 
 app.get("/api", (req, res) => {
@@ -89,6 +134,7 @@ app.post("/api/contact", async (req, res) => {
     await newContact.save();
     res.json({ success: true, message: "Message envoyé !" });
   } catch (error) {
+    console.error("Erreur contact:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
@@ -98,6 +144,7 @@ app.get("/api/contacts", async (req, res) => {
     const contacts = await Contact.find().sort({ createdAt: -1 });
     res.json({ success: true, contacts });
   } catch (error) {
+    console.error("Erreur get contacts:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
@@ -107,11 +154,12 @@ app.delete("/api/contacts/:id", async (req, res) => {
     await Contact.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: "Supprimé" });
   } catch (error) {
+    console.error("Erreur delete contact:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
-// ============ AUTH ============
+// ============ AUTHENTIFICATION ============
 app.post("/api/register", async (req, res) => {
   const { username, email, password } = req.body;
 
@@ -120,7 +168,6 @@ app.post("/api/register", async (req, res) => {
       .status(400)
       .json({ success: false, message: "Tous les champs sont requis" });
   }
-
   if (password.length < 6) {
     return res
       .status(400)
@@ -148,6 +195,7 @@ app.post("/api/register", async (req, res) => {
       user: { id: newUser._id, username, email, role: newUser.role },
     });
   } catch (error) {
+    console.error("Erreur register:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
@@ -187,11 +235,12 @@ app.post("/api/login", loginLimiter, async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("Erreur login:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
-// ============ FORGOT PASSWORD (BREVO) ============
+// ============ MOT DE PASSE OUBLIÉ (BREVO API REST) ============
 app.post("/api/forgot-password", forgotLimiter, async (req, res) => {
   const { email } = req.body;
 
@@ -215,33 +264,32 @@ app.post("/api/forgot-password", forgotLimiter, async (req, res) => {
     );
     const resetLink = `https://hamabenhalima.github.io/SOIT-Infrastructure-Website/reset-password.html?token=${resetToken}`;
 
-    // Configuration de l'email Brevo
-    const sendSmtpEmail = new brevo.SendSmtpEmail();
-    sendSmtpEmail.to = [{ email: user.email, name: user.username || "Client" }];
-    sendSmtpEmail.sender = {
-      email: process.env.BREVO_FROM_EMAIL || "noreply@brevo.com",
-      name: "SOIT Infrastructure",
-    };
-    sendSmtpEmail.subject = "🔐 Réinitialisation de votre mot de passe - SOIT";
-    sendSmtpEmail.htmlContent = `
+    const htmlContent = `
       <h2>Réinitialisation de votre mot de passe</h2>
       <p>Bonjour ${user.username || "Cher client"},</p>
       <p>Cliquez sur le lien ci-dessous :</p>
       <a href="${resetLink}">${resetLink}</a>
       <p>Ce lien expire dans 1 heure.</p>
+      <hr>
+      <p>SOIT Infrastructure</p>
     `;
 
-    await apiInstance.sendTransacEmail(sendSmtpEmail);
+    await sendBrevoEmail(
+      user.email,
+      "🔐 Réinitialisation de votre mot de passe - SOIT",
+      htmlContent,
+      user.username,
+    );
 
-    console.log(`✅ Email envoyé via Brevo à: ${user.email}`);
+    console.log(`✅ Email envoyé via Brevo (API REST) à: ${user.email}`);
     res.json({ success: true, message: "Email envoyé !" });
   } catch (error) {
-    console.error("❌ Erreur Brevo:", error.response?.body || error.message);
+    console.error("❌ Erreur Brevo:", error.message);
     res.status(500).json({ success: false, message: "Erreur d'envoi" });
   }
 });
 
-// ============ RESET PASSWORD ============
+// ============ RÉINITIALISATION DU MOT DE PASSE ============
 app.post("/api/reset-password", async (req, res) => {
   const { token, newPassword } = req.body;
 
@@ -255,25 +303,30 @@ app.post("/api/reset-password", async (req, res) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id);
-    if (!user)
+    if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "Utilisateur non trouvé" });
+    }
 
     user.password = newPassword;
     await user.save();
 
+    console.log(`✅ Mot de passe réinitialisé pour: ${user.email}`);
     res.json({ success: true, message: "Mot de passe réinitialisé !" });
   } catch (error) {
-    if (error.name === "TokenExpiredError")
+    if (error.name === "TokenExpiredError") {
       return res.status(400).json({ success: false, message: "Lien expiré" });
-    if (error.name === "JsonWebTokenError")
+    }
+    if (error.name === "JsonWebTokenError") {
       return res.status(400).json({ success: false, message: "Lien invalide" });
+    }
+    console.error("Erreur reset password:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
-// ============ REVIEWS ============
+// ============ AVIS CLIENTS ============
 app.post("/api/reviews", async (req, res) => {
   const { name, email, rating, comment } = req.body;
 
@@ -302,6 +355,7 @@ app.post("/api/reviews", async (req, res) => {
     await newReview.save();
     res.json({ success: true, message: "Merci pour votre avis !" });
   } catch (error) {
+    console.error("Erreur review:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
@@ -313,6 +367,7 @@ app.get("/api/reviews", async (req, res) => {
       .limit(10);
     res.json({ success: true, reviews });
   } catch (error) {
+    console.error("Erreur get reviews:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
@@ -323,11 +378,21 @@ app.get("/api/users", async (req, res) => {
     const users = await User.find().select("-password");
     res.json({ success: true, users });
   } catch (error) {
+    console.error("Erreur get users:", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
-// ============ START SERVER ============
+// ============ DÉMARRAGE ============
 app.listen(PORT, () => {
-  console.log(`🚀 Serveur démarré sur le port ${PORT}`);
+  console.log(`
+    ╔══════════════════════════════════════════════════╗
+    ║         SOIT Backend Server                     ║
+    ╠══════════════════════════════════════════════════╣
+    ║   Status:     ✅ Running                        ║
+    ║   Port:       ${PORT}                              ║
+    ║   Email:      Brevo (API REST)                  ║
+    ║   Database:   MongoDB                           ║
+    ╚══════════════════════════════════════════════════╝
+  `);
 });
