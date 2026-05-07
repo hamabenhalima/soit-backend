@@ -26,7 +26,8 @@ async function sendBrevoEmail(to, subject, htmlContent, userName = "Client") {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({
       sender: {
-        email: process.env.BREVO_FROM_EMAIL || "noreply@brevo.com",
+        email:
+          process.env.BREVO_FROM_EMAIL || "mohamedislembenhalima@gmail.com",
         name: "SOIT Infrastructure",
       },
       to: [{ email: to, name: userName }],
