@@ -27,8 +27,8 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ============ RATE LIMITING (sécurité) ============
 const forgotLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 tentatives max
+  windowMs: 1 * 60 * 1000, // 1 minutes
+  max: 20, // 20 tentatives max
   message: {
     success: false,
     message: "Trop de tentatives. Veuillez réessayer dans 15 minutes.",
