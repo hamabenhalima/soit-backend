@@ -5,11 +5,14 @@ const ReviewSchema = new mongoose.Schema({
     type: String,
     required: [true, "Name is required"],
     trim: true,
+    maxlength: 120,
   },
   email: {
     type: String,
     required: [true, "Email is required"],
     lowercase: true,
+    trim: true,
+    maxlength: 254,
   },
   rating: {
     type: Number,
@@ -22,6 +25,7 @@ const ReviewSchema = new mongoose.Schema({
     required: [true, "Comment is required"],
     trim: true,
     minlength: 10,
+    maxlength: 2000,
   },
   status: {
     type: String,
