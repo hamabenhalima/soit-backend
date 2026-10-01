@@ -71,6 +71,14 @@ const normalizeProjectInput = (body) => {
   const description = typeof body.description === "string" ? body.description.trim() : "";
   const image = typeof body.image === "string" ? body.image.trim() : "";
   const year = body.year === "" || body.year == null ? null : Number(body.year);
+  const isCurrent = body.isCurrent === true;
+  const progressPercent = body.progressPercent === "" || body.progressPercent == null ? 0 : Number(body.progressPercent);
+  const currentStage = typeof body.currentStage === "string" ? body.currentStage.trim() : "";
+  const latestUpdate = typeof body.latestUpdate === "string" ? body.latestUpdate.trim() : "";
+  const latestUpdateEn = typeof body.latestUpdateEn === "string" ? body.latestUpdateEn.trim() : "";
+  const latestUpdateAr = typeof body.latestUpdateAr === "string" ? body.latestUpdateAr.trim() : "";
+  const latestUpdateAt = body.latestUpdateAt ? new Date(body.latestUpdateAt) : null;
+  const isPublished = body.isPublished !== false;
   const galleryImages = Array.isArray(body.galleryImages)
     ? [...new Set(body.galleryImages.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean))]
     : [];
@@ -82,12 +90,33 @@ const normalizeProjectInput = (body) => {
     !description || description.length > 1000 ||
     !isSafeProjectImage(image) ||
     (year !== null && (!Number.isInteger(year) || year < 1900 || year > 2100)) ||
+    !Number.isFinite(progressPercent) || progressPercent < 0 || progressPercent > 100 ||
+    !["", "Étude", "Terrassement", "VRD", "Voirie", "Espaces verts", "Livraison"].includes(currentStage) ||
+    latestUpdate.length > 500 || latestUpdateEn.length > 500 || latestUpdateAr.length > 500 ||
+    (latestUpdateAt && Number.isNaN(latestUpdateAt.getTime())) ||
+    (isCurrent && (!isPublished || !currentStage || !latestUpdate || !latestUpdateAt)) ||
     galleryImages.length > 20 || galleryImages.some((galleryImage) => !isSafeProjectImage(galleryImage))
   ) {
     return null;
   }
 
-  return { title, category, location, description, image, year, galleryImages, isPublished: body.isPublished !== false };
+  return {
+    title,
+    category,
+    location,
+    description,
+    image,
+    year,
+    galleryImages,
+    isCurrent,
+    progressPercent,
+    currentStage,
+    latestUpdate,
+    latestUpdateEn,
+    latestUpdateAr,
+    latestUpdateAt,
+    isPublished,
+  };
 };
 const escapeHtml = (value = "") =>
   String(value).replace(/[&<>"']/g, (character) => {
@@ -282,11 +311,15 @@ app.get("/api", (req, res) => {
 app.get("/api/projects", requireDatabase, async (req, res) => {
   try {
     const projects = await Project.find({ isPublished: true })
-      .select("title category location year description image galleryImages createdAt")
+      .select("title category location year description image galleryImages isCurrent progressPercent currentStage latestUpdate latestUpdateEn latestUpdateAr latestUpdateAt createdAt updatedAt")
       .sort({ createdAt: 1, _id: 1 })
       .limit(100)
       .lean();
-    res.json({ success: true, projects });
+    res.json({
+      success: true,
+      projects,
+      currentProject: projects.find((project) => project.isCurrent) || null,
+    });
   } catch (error) {
     console.error("Error loading public projects:", error.message);
     res.status(500).json({ success: false, message: "Unable to load projects" });
@@ -733,6 +766,9 @@ app.post("/api/admin/projects", requireAdmin, async (req, res) => {
     return res.status(400).json({ success: false, message: "Vérifiez les champs et les chemins des photos." });
   }
   try {
+    if (projectData.isCurrent) {
+      await Project.updateMany({ isCurrent: true }, { $set: { isCurrent: false } });
+    }
     const project = await Project.create(projectData);
     res.status(201).json({ success: true, project });
   } catch (error) {
@@ -750,6 +786,12 @@ app.put("/api/admin/projects/:id", requireAdmin, async (req, res) => {
     return res.status(400).json({ success: false, message: "Vérifiez les champs et les chemins des photos." });
   }
   try {
+    if (projectData.isCurrent) {
+      await Project.updateMany(
+        { isCurrent: true, _id: { $ne: req.params.id } },
+        { $set: { isCurrent: false } },
+      );
+    }
     const project = await Project.findByIdAndUpdate(req.params.id, projectData, {
       new: true,
       runValidators: true,
